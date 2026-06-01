@@ -1,0 +1,14 @@
+^WebService-OCI-
+\bblib/
+\bpm_to_blib\b
+^Makefile$
+^Makefile\.old$
+^blibdirs$
+\.bak$
+\.old$
+\.swp$
+~$
+^MYMETA\.
+^\.git
+^\.github
+\.tar\.gz$

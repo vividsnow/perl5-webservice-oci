@@ -1,0 +1,33 @@
+Examples for WebService::OCI
+============================
+
+These scripts use the DEFAULT profile from ~/.oci/config unless noted.
+See WebService::OCI::Guide for how to set that up, and
+WebService::OCI::Cookbook for more recipes.
+
+  first-call.pl
+      Hello world: print your Object Storage namespace.
+        perl eg/first-call.pl
+
+  list-instances.pl <compartment-ocid> [profile]
+      List Compute instances in a compartment, following pagination.
+      The root compartment OCID is your tenancy OCID.
+
+  objectstorage.pl <compartment-ocid> <bucket> [file]
+      Namespace + list buckets; optionally upload a file and read it back
+      (shows the PutObject signing exception).
+
+  raw-request.pl METHOD SERVICE PATH [key=value ...]
+      A minimal generic caller, e.g.
+        perl eg/raw-request.pl GET iaas /20160918/instances compartmentId=ocid1..c
+
+  setup-network.pl --compartment OCID [--name demo] [...]
+      Create a minimal public network over the API: VCN, internet gateway,
+      a default route to it, and a public regional subnet. Prints the subnet
+      OCID to feed to launch-instance.pl. (Networking resources are free.)
+
+  launch-instance.pl --compartment OCID --subnet OCID --ssh-key FILE [...]
+      Launch a Compute instance end to end: resolve availability domain and
+      image, launch, wait for RUNNING, print the public IP and ssh command.
+
+For the command-line tool, see: oci-rest --help

@@ -1,0 +1,511 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Getopt::Long qw(:config no_auto_abbrev no_ignore_case bundling permute);
+use WebService::OCI;
+use WebService::OCI::Signer;
+
+our $VERSION = '0.01';
+
+my %opt = (output => 'json');
+GetOptions(\%opt,
+    'profile=s', 'config=s', 'region=s',
+    'service=s', 'endpoint|base-url=s',
+    'header|H=s@', 'param|p=s@',
+    'body=s', 'body-file=s',
+    'query=s', 'output|o=s', 'include|i',
+    'timeout=i', 'insecure', 'debug',
+    'help|h', 'version|V',
+) or usage(1);
+
+if ($opt{version}) {
+    print "oci-rest $VERSION (WebService::OCI ", WebService::OCI->VERSION, ")\n";
+    exit 0;
+}
+usage(0) if $opt{help};
+
+my $cmd = shift @ARGV;
+usage(1) unless defined $cmd;
+
+# utility subcommands (no signed request / credentials needed)
+if    ($cmd eq 'fingerprint') { cmd_fingerprint(@ARGV); exit 0 }
+elsif ($cmd eq 'configure')   { cmd_configure();         exit 0 }
+
+my %VERB = map { $_ => uc $_ } qw(get head delete post put patch);
+my $method = $VERB{ lc $cmd } or do { warn "oci-rest: unknown command '$cmd'\n"; usage(1) };
+
+my $path = shift @ARGV;
+defined $path or do { warn "oci-rest: $cmd requires a PATH\n"; usage(1) };
+
+# ordered query params from repeatable --param k=v
+my @query;
+for my $p (@{ $opt{param} || [] }) {
+    my ($k, $v) = split /=/, $p, 2;   # no '=' -> undef value -> bare key
+    push @query, $k, $v;
+}
+
+# extra headers from repeatable --header 'K: V'
+my %headers;
+for my $h (@{ $opt{header} || [] }) {
+    my ($k, $v) = split /:\s*/, $h, 2;
+    $headers{$k} = defined $v ? $v : '';
+}
+
+# body from --body, --body-file, or '-' for stdin (read as raw bytes)
+my $body;
+if (defined $opt{'body-file'}) {
+    $body = $opt{'body-file'} eq '-' ? read_stdin() : slurp($opt{'body-file'});
+}
+elsif (defined $opt{body}) {
+    $body = $opt{body} eq '-' ? read_stdin() : $opt{body};
+}
+
+my $oci = eval { make_client() };
+unless ($oci) { my $e = $@ || 'failed to build client'; $e =~ s/\s+at .* line \d+\.?\n?$//; die "oci-rest: $e\n" }
+
+my $res = $oci->request(
+    method => $method,
+    path   => $path,
+    (@query   ? (query   => \@query)   : ()),
+    (defined $body ? (body => $body)   : ()),
+    (%headers ? (headers => \%headers) : ()),
+);
+
+if ($opt{include}) {
+    printf "HTTP %s %s\n", $res->status, defined $res->reason ? $res->reason : '';
+    my $h = $res->headers;
+    for my $k (sort keys %$h) {
+        my $v = $h->{$k};
+        $v = join ', ', @$v if ref $v eq 'ARRAY';
+        print "$k: $v\n";
+    }
+    print "\n";
+}
+
+if ($opt{output} eq 'raw') {          # always defined (defaults to 'json')
+    my $raw = $res->raw;
+    print defined $raw ? $raw : '';
+}
+else {
+    my $out = $res->content;                      # decoded JSON, else raw string
+    $out = extract($out, $opt{query}) if defined $opt{query};
+    emit($out);
+}
+
+exit($res->is_success ? 0 : 2);
+
+# --------------------------------------------------------------------------
+
+sub make_client {
+    my %a = (
+        (defined $opt{config}   ? (config_file => $opt{config})   : ()),
+        (defined $opt{profile}  ? (profile     => $opt{profile})
+         : defined $ENV{OCI_CLI_PROFILE} ? (profile => $ENV{OCI_CLI_PROFILE}) : ()),
+        (defined $opt{region}   ? (region      => $opt{region})   : ()),
+        (defined $opt{service}  ? (service     => $opt{service})  : ()),
+        (defined $opt{endpoint} ? (base_url    => $opt{endpoint}) : ()),
+        (defined $opt{timeout}  ? (timeout     => $opt{timeout})  : ()),
+        ($opt{insecure}         ? (verify_SSL  => 0)              : ()),
+    );
+    if ($opt{debug}) {
+        $a{trace} = sub {
+            my ($t) = @_;
+            print STDERR "> $t->{method} $t->{url}\n";
+            print STDERR "> signing string:\n";
+            print STDERR "    $_\n" for split /\n/, $t->{signing_string};
+            print STDERR "> headers:\n";
+            my $h = $t->{headers};
+            print STDERR "    $_: $h->{$_}\n" for sort keys %$h;
+        };
+    }
+    return WebService::OCI->new(%a);
+}
+
+my $JSON;
+sub _json { $JSON ||= do { require JSON::PP; JSON::PP->new->utf8->pretty->canonical->allow_nonref } }
+
+sub emit {
+    my ($v) = @_;
+    if (!defined $v) { return }
+    if (ref $v) { print _json()->encode($v) }   # pretty JSON, trailing newline
+    else        { print "$v\n" }                 # bare scalar (good for --query)
+}
+
+# simple dotted path into decoded JSON (not full JMESPath): "data.0.id"
+sub extract {
+    my ($data, $path) = @_;
+    for my $seg (split /\./, $path) {
+        if    (ref $data eq 'ARRAY' && $seg =~ /^\d+$/) { $data = $data->[$seg] }
+        elsif (ref $data eq 'HASH')                     { $data = $data->{$seg} }
+        else  { return undef }
+        return undef unless defined $data;
+    }
+    return $data;
+}
+
+sub cmd_fingerprint {
+    my ($file) = @_;
+    my $home = defined $ENV{HOME} ? $ENV{HOME} : $ENV{USERPROFILE};
+    $file = defined $file ? $file
+          : defined $ENV{OCI_API_KEY} ? $ENV{OCI_API_KEY}
+          : (defined $home ? "$home/.oci/oci_api_key.pem" : undef);
+    die "oci-rest: no key file given and no default found\n" unless defined $file;
+    $file = _expand($file);
+    die "oci-rest: cannot read key file '$file'\n" unless -r $file;
+    my $s = eval { WebService::OCI::Signer->new(key_file => $file) };
+    unless ($s) {
+        my $e = $@ || 'cannot load key';
+        $e =~ s/\s+at .* line \d+\.?\n?$//;
+        die "oci-rest: $e\n";
+    }
+    print $s->key_fingerprint, "\n";
+}
+
+sub cmd_configure {
+    my $home = defined $ENV{HOME} ? $ENV{HOME} : $ENV{USERPROFILE};
+    my $file = defined $opt{config} ? $opt{config}
+             : defined $ENV{OCI_CONFIG_FILE} ? $ENV{OCI_CONFIG_FILE}
+             : defined $home ? "$home/.oci/config"
+             : die "oci-rest: no --config given and HOME is not set\n";
+    my $profile = defined $opt{profile} ? $opt{profile} : 'DEFAULT';
+    print STDERR "Configuring profile [$profile] -> $file\n";
+
+    my %v;
+    $v{user}     = prompt('user OCID');
+    $v{tenancy}  = prompt('tenancy OCID');
+    $v{region}   = prompt('region', $opt{region});
+    $v{key_file} = prompt('API private key file',
+        defined $home ? "$home/.oci/oci_api_key.pem" : '');
+
+    my $fp = '';
+    my $kf = _expand($v{key_file});
+    if (length $kf && -r $kf) {
+        $fp = eval { WebService::OCI::Signer->new(key_file => $kf)->key_fingerprint } || '';
+    }
+    $v{fingerprint} = prompt('fingerprint', $fp);
+
+    my $block = "[$profile]\n"
+        . join('', map { "$_=$v{$_}\n" } qw(user fingerprint tenancy region key_file));
+    print "\n$block\n";
+
+    # never silently clobber an existing profile (config files are precious)
+    my $existing = -e $file ? slurp($file) : '';
+    if ($existing =~ /^\[\Q$profile\E\]/m) {
+        print STDERR "profile [$profile] already exists in $file; not modifying.\n";
+        print STDERR "Edit it by hand, or pick another --profile.\n";
+        return;
+    }
+
+    print STDERR "Append this profile to $file? [y/N] ";
+    my $ans = <STDIN>;
+    unless (defined $ans && $ans =~ /^\s*y/i) { print STDERR "not written\n"; return }
+
+    # separate from existing content, even if it has no trailing newline
+    my $sep = $existing eq ''     ? ''
+            : $existing =~ /\n\z/ ? "\n"
+            :                       "\n\n";
+
+    require File::Basename;
+    require File::Path;
+    File::Path::make_path(File::Basename::dirname($file));
+    open my $fh, '>>', $file or die "oci-rest: cannot write $file: $!\n";
+    chmod 0600, $file;             # tighten before writing any credentials
+    print {$fh} $sep, $block;
+    close $fh;
+    print STDERR "wrote $file\n";
+}
+
+sub prompt {
+    my ($label, $default) = @_;
+    my $d = defined $default && length $default ? " [$default]" : '';
+    print STDERR "$label$d: ";
+    my $in = <STDIN>;
+    chomp $in if defined $in;
+    $in = $default if (!defined $in || $in eq '') && defined $default;
+    return defined $in ? $in : '';
+}
+
+sub _expand {
+    my ($p) = @_;
+    return $p unless defined $p;
+    my $home = defined $ENV{HOME} ? $ENV{HOME} : $ENV{USERPROFILE};
+    $p =~ s{^~(?=/|\z)}{$home} if defined $home;
+    return $p;
+}
+
+sub slurp {
+    my ($f) = @_;
+    open my $fh, '<:raw', $f or die "oci-rest: cannot read $f: $!\n";
+    local $/;
+    my $c = <$fh>;
+    close $fh;
+    return $c;
+}
+
+sub read_stdin {
+    binmode STDIN;
+    local $/;
+    return scalar <STDIN>;
+}
+
+sub usage {
+    my ($code) = @_;
+    my $fh = $code ? *STDERR : *STDOUT;
+    print {$fh} <<'USAGE';
+oci-rest - sign and send requests to the Oracle Cloud Infrastructure REST API
+
+Usage:
+  oci-rest [options] <get|head|delete> PATH
+  oci-rest [options] <post|put|patch> PATH [--body STR | --body-file FILE | --body -]
+  oci-rest fingerprint [KEYFILE]      print the API key fingerprint
+                                      (default $OCI_API_KEY or ~/.oci/oci_api_key.pem)
+  oci-rest configure                  set up a ~/.oci/config profile
+
+Credentials (resolved like the OCI SDKs):
+  --profile NAME      config profile (default DEFAULT, or $OCI_CLI_PROFILE)
+  --config FILE       config file (default $OCI_CONFIG_FILE or ~/.oci/config)
+  --region REGION     override region
+
+Target:
+  --service NAME      service prefix, builds <name>.<region>.oraclecloud.com
+                      (e.g. iaas, objectstorage, identity)
+  --endpoint URL      full base URL or host (alias --base-url; use for other
+                      realms/hosts, e.g. objectstorage.<region>.oraclegovcloud.com)
+
+Request:
+  -p, --param k[=v]   query parameter (repeatable, RFC3986-encoded; omit =v for
+                      a bare key)
+  -H, --header 'K: V' extra request header (repeatable)
+      --body STR      request body ('-' reads stdin)
+      --body-file F   request body from a file ('-' reads stdin)
+
+Output:
+  -o, --output FMT    json (pretty, default) | raw (verbatim body)
+      --query PATH    dotted path into the JSON, e.g. data.0.id
+  -i, --include       print status line and response headers first
+      --debug         print the signing string and headers to stderr
+      --timeout SEC   request timeout (default 60)
+      --insecure      do not verify TLS certificates
+  -V, --version       print version
+  -h, --help          this help
+
+Examples:
+  oci-rest get /20160918/instances --service iaas -p compartmentId=ocid1..c
+  oci-rest get /20160918/instances --service iaas -p compartmentId=$C --query 0.displayName
+  oci-rest post /20160918/vcns --service iaas --body-file vcn.json
+  oci-rest get /n --service objectstorage          # tenancy namespace
+  oci-rest fingerprint ~/.oci/oci_api_key.pem
+
+Exit status: 0 success, 1 usage/setup error, 2 HTTP error response.
+USAGE
+    exit $code;
+}
+
+__END__
+
+=head1 NAME
+
+oci-rest - command-line client for the Oracle Cloud Infrastructure REST API
+
+=head1 SYNOPSIS
+
+    oci-rest get  /20160918/instances --service iaas -p compartmentId=$C
+    oci-rest post /20160918/vcns       --service iaas --body-file vcn.json
+    oci-rest get  /n                   --service objectstorage
+    oci-rest fingerprint ~/.oci/oci_api_key.pem
+    oci-rest configure
+
+=head1 DESCRIPTION
+
+A thin, generic command-line front end to L<WebService::OCI>: it signs and
+sends a request to B<any> OCI endpoint, in the spirit of the AWS CLI's
+low-level calls but without a per-service command tree. The HTTP method is the
+subcommand; C<configure> and C<fingerprint> are convenience helpers.
+
+Credentials are read from F<~/.oci/config> exactly as the official tooling does
+(see L<WebService::OCI::Guide> to set that up). You supply the path and
+parameters straight from Oracle's REST API reference.
+
+=head1 COMMANDS
+
+=over 4
+
+=item B<get> I<PATH>, B<head> I<PATH>, B<delete> I<PATH>
+
+Send a request with no body.
+
+=item B<post> I<PATH>, B<put> I<PATH>, B<patch> I<PATH>
+
+Send a request with a body from C<--body>, C<--body-file>, or C<-> (stdin).
+
+=item B<fingerprint> [I<KEYFILE>]
+
+Print the API-key fingerprint for a PEM key (default C<$OCI_API_KEY> or
+F<~/.oci/oci_api_key.pem>). Matches the value the OCI Console shows.
+
+=item B<configure>
+
+Prompt for credentials and append a profile to the config file. It derives the
+fingerprint from the key and never overwrites an existing profile.
+
+=back
+
+=head1 OPTIONS
+
+=head2 Credentials
+
+=over 4
+
+=item B<--profile> I<NAME>
+
+Config profile (default C<DEFAULT>, or C<$OCI_CLI_PROFILE> if set).
+
+=item B<--config> I<FILE>
+
+Config file (default C<$OCI_CONFIG_FILE> or F<~/.oci/config>).
+
+=item B<--region> I<REGION>
+
+Override the region.
+
+=back
+
+=head2 Target
+
+=over 4
+
+=item B<--service> I<NAME>
+
+Service prefix; builds C<< <name>.<region>.oraclecloud.com >> (e.g. C<iaas>,
+C<objectstorage>, C<identity>).
+
+=item B<--endpoint> I<URL> (alias B<--base-url>)
+
+Full base URL or host. Use this for other realms or hosts that do not fit the
+simple pattern.
+
+=back
+
+=head2 Request
+
+=over 4
+
+=item B<-p>, B<--param> I<key>[=I<value>]
+
+Query parameter, repeatable, percent-encoded per RFC 3986. Omit C<=value> for a
+bare key (C<?key> rather than C<?key=>).
+
+=item B<-H>, B<--header> I<'K: V'>
+
+Extra request header, repeatable.
+
+=item B<--body> I<STR>, B<--body-file> I<FILE>
+
+Request body; C<-> reads stdin.
+
+=back
+
+=head2 Output and diagnostics
+
+=over 4
+
+=item B<-o>, B<--output> I<json|raw>
+
+C<json> pretty-prints the decoded body (default); C<raw> writes the body
+verbatim (use for binary downloads).
+
+=item B<--query> I<PATH>
+
+Extract a value by dotted path into the decoded JSON, e.g. C<data.0.id>. This
+is a simple path, not full JMESPath.
+
+=item B<-i>, B<--include>
+
+Print the status line and response headers before the body.
+
+=item B<--debug>
+
+Print the signing string and request headers to stderr - the fastest way to
+diagnose a 401.
+
+=item B<--timeout> I<SEC>
+
+Request timeout in seconds (default 60).
+
+=item B<--insecure>
+
+Do not verify TLS certificates.
+
+=item B<-V>, B<--version> / B<-h>, B<--help>
+
+Print version / usage.
+
+=back
+
+=head1 EXAMPLES
+
+    # your Object Storage namespace (a good first call)
+    oci-rest get /n --service objectstorage
+
+    # list compute instances, pull one field out
+    oci-rest get /20160918/instances --service iaas \
+        -p compartmentId=$C --query 0.displayName
+
+    # create from a JSON body
+    oci-rest post /20160918/vcns --service iaas --body-file vcn.json
+
+    # download an object to a file
+    oci-rest get "/n/$NS/b/$BUCKET/o/file.bin" --service objectstorage \
+        --output raw > file.bin
+
+    # debug a rejected signature
+    oci-rest --debug get /n --service objectstorage
+
+=head1 EXIT STATUS
+
+C<0> on a 2xx response, C<1> on a usage or setup error, C<2> on an HTTP error
+response (status >= 400, including transport failures reported as 599).
+
+=head1 ENVIRONMENT
+
+=over 4
+
+=item C<OCI_CONFIG_FILE>
+
+Default config file when C<--config> is not given.
+
+=item C<OCI_CLI_PROFILE>
+
+Profile used when C<--profile> is not given (matching the official OCI CLI).
+
+=item C<OCI_API_KEY>
+
+Default key for C<fingerprint>.
+
+=back
+
+=head1 FILES
+
+=over 4
+
+=item F<~/.oci/config>
+
+Credentials, in INI format. See L<WebService::OCI::Config> and
+L<WebService::OCI::Guide>.
+
+=back
+
+=head1 SEE ALSO
+
+L<WebService::OCI>, L<WebService::OCI::Guide>, L<WebService::OCI::Cookbook>
+
+=head1 AUTHOR
+
+vividsnow
+
+=head1 LICENSE
+
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut

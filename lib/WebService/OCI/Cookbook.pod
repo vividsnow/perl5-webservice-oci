@@ -1,0 +1,288 @@
+=head1 NAME
+
+WebService::OCI::Cookbook - task-oriented recipes for WebService::OCI
+
+=head1 DESCRIPTION
+
+Practical recipes for common Oracle Cloud Infrastructure jobs. They assume you
+have a working F<~/.oci/config>; if not, start with L<WebService::OCI::Guide>.
+
+Paths and parameters come straight from Oracle's REST API reference at
+L<https://docs.oracle.com/en-us/iaas/api/>. Each recipe shows the Perl form and,
+where handy, the equivalent L<oci-rest> command.
+
+=head1 Credentials and profiles
+
+Default profile from F<~/.oci/config>:
+
+    my $oci = WebService::OCI->new(service => 'iaas');
+
+A named profile, an explicit config file, or inline credentials:
+
+    my $oci = WebService::OCI->new(profile => 'STAGING', service => 'iaas');
+
+    my $oci = WebService::OCI->new(
+        config_file => '/etc/oci/config', profile => 'ci', service => 'iaas');
+
+    my $oci = WebService::OCI->new(
+        tenancy => $t, user => $u, fingerprint => $f,
+        key_file => '/secure/key.pem', region => 'us-ashburn-1',
+        service => 'iaas',
+    );
+
+Talk to two regions at once - construct one client per region (or pass
+C<< region =E<gt> ... >> per request):
+
+    my $ash = WebService::OCI->new(region => 'us-ashburn-1',  service => 'iaas');
+    my $fra = WebService::OCI->new(region => 'eu-frankfurt-1', service => 'iaas');
+
+    # ...or override the region (or service) on a single call:
+    my $r = $ash->get('/20160918/instances',
+        query => { compartmentId => $cid }, region => 'eu-frankfurt-1');
+
+=head1 List resources, with paging
+
+OCI list operations cap the page size and return an C<opc-next-page> response
+header; pass it back as the C<page> query parameter until it disappears.
+
+    sub list_all {
+        my ($oci, $path, %query) = @_;
+        my (@items, $page);
+        do {
+            my $res = $oci->get($path, query => {
+                %query, limit => 100, (defined $page ? (page => $page) : ()),
+            });
+            die $res->reason unless $res->is_success;
+            push @items, @{ $res->content };
+            $page = $res->headers->{'opc-next-page'};
+        } while (defined $page);
+        return @items;
+    }
+
+    my @instances = list_all($oci, '/20160918/instances',
+        compartmentId => $compartment_id);
+
+=head1 Object Storage: namespace, buckets, objects
+
+Your tenancy namespace (needed in every Object Storage path):
+
+    my $os = WebService::OCI->new(service => 'objectstorage');
+    my $ns = $os->get('/n')->content;       # e.g. "axhebr1abc23"
+
+List buckets in a compartment:
+
+    my $buckets = $os->get("/n/$ns/b", query => {
+        compartmentId => $compartment_id })->content;
+
+B<Upload> an object. PutObject is the signing exception that signs only
+C<(request-target) host date> (not the body digest), so override C<sign_headers>
+and send the bytes as a raw C<body>:
+
+    use File::Slurper qw(read_binary);   # or any way to get the bytes
+    my $bytes = read_binary('photo.jpg');
+
+    my $res = $os->put("/n/$ns/b/$bucket/o/photo.jpg", undef,
+        body         => $bytes,
+        headers      => { 'content-type' => 'image/jpeg' },
+        sign_headers => [ '(request-target)', 'host', 'date' ],
+    );
+    die $res->reason unless $res->is_success;
+
+B<Download> an object - the body is binary, so read C<raw>, not C<content>:
+
+    my $res = $os->get("/n/$ns/b/$bucket/o/photo.jpg");
+    open my $fh, '>:raw', 'photo.jpg' or die $!;
+    print {$fh} $res->raw;
+
+=head1 Create a resource and wait for it
+
+Create operations are POSTs; the response body is the new resource:
+
+    my $net = WebService::OCI->new(service => 'iaas');
+    my $vcn = $net->post('/20160918/vcns', {
+        compartmentId => $compartment_id,
+        cidrBlock     => '10.0.0.0/16',
+        displayName   => 'demo-vcn',
+    })->content;
+
+There is no magic "waiter": just poll the resource until its
+C<lifecycleState> settles.
+
+    sub wait_state {
+        my ($oci, $path, $want, %opt) = @_;
+        my $tries = $opt{tries} || 60;
+        for (1 .. $tries) {
+            my $res = $oci->get($path);
+            my $state = $res->is_success && $res->content->{lifecycleState};
+            return $res->content if $state && $state eq $want;
+            sleep $opt{delay} || 3;
+        }
+        die "timed out waiting for $want at $path\n";
+    }
+
+    wait_state($net, "/20160918/vcns/$vcn->{id}", 'AVAILABLE');
+
+=head1 Launch a Compute instance
+
+The full job in one place: resolve an availability domain and an image, launch,
+wait for C<RUNNING>, then read the public IP. It needs a compartment, an
+existing subnet (in a VCN with an internet gateway and a public route), and your
+SSH public key. A complete runnable version is F<eg/launch-instance.pl>.
+
+    my $oci = WebService::OCI->new(service => 'iaas');
+
+    # availability domain (Identity service)
+    my $ad = $oci->get('/20160918/availabilityDomains',
+        service => 'identity', query => { compartmentId => $compartment })
+        ->content->[0]{name};
+
+    # newest matching image
+    my $image = $oci->get('/20160918/images', query => {
+        compartmentId => $compartment, operatingSystem => 'Oracle Linux',
+        shape => 'VM.Standard.E2.1.Micro',
+        sortBy => 'TIMECREATED', sortOrder => 'DESC', limit => 1,
+    })->content->[0];
+
+    # launch (assignPublicIp uses a JSON boolean: \1 = true, \0 = false)
+    my $inst = $oci->post('/20160918/instances', {
+        availabilityDomain => $ad,
+        compartmentId      => $compartment,
+        shape              => 'VM.Standard.E2.1.Micro',
+        displayName        => 'demo-instance',
+        sourceDetails      => { sourceType => 'image', imageId => $image->{id} },
+        createVnicDetails  => { subnetId => $subnet, assignPublicIp => \1 },
+        metadata           => { ssh_authorized_keys => $ssh_public_key },
+    })->content;
+
+A flex shape (for example C<VM.Standard.A1.Flex>) additionally needs
+C<< shapeConfig =E<gt> { ocpus =E<gt> 1, memoryInGBs =E<gt> 6 } >>.
+
+Wait for it, then resolve the public IP through the instance's VNIC (see
+L</"Create a resource and wait for it"> for C<wait_state>):
+
+    wait_state($oci, "/20160918/instances/$inst->{id}", 'RUNNING');
+
+    my $att = $oci->get('/20160918/vnicAttachments', query => {
+        compartmentId => $compartment, instanceId => $inst->{id} })->content->[0];
+    my $ip = $oci->get("/20160918/vnics/$att->{vnicId}")->content->{publicIp};
+    print "ssh opc\@$ip\n";
+
+=head1 Safe retries and optimistic concurrency
+
+Make a create idempotent with a retry token (resending the same token will not
+create a second resource):
+
+    my $token = sprintf 'demo-%d-%d', $$, time;
+    $net->post('/20160918/vcns', \%body,
+        headers => { 'opc-retry-token' => $token });
+
+Guard an update or delete with the resource ETag so you do not clobber a
+concurrent change:
+
+    my $got  = $oci->get($path);
+    my $etag = $got->headers->{etag};
+    $oci->delete($path, headers => { 'if-match' => $etag });
+
+=head1 Handle errors uniformly
+
+A completed HTTP call never dies; check the response. OCI error bodies are JSON
+with C<code> and C<message>, and C<opc-request-id> is what Oracle support wants.
+
+    sub call_or_die {
+        my ($res) = @_;
+        return $res if $res->is_success;
+        my $b   = $res->content;
+        my $msg = ref $b eq 'HASH' ? "$b->{code}: $b->{message}" : ($b // '');
+        die sprintf "OCI %s %s - %s (opc-request-id=%s)\n",
+            $res->status, $res->reason // '', $msg,
+            $res->headers->{'opc-request-id'} // '-';
+    }
+
+    my $data = call_or_die($oci->get('/20160918/instances',
+        query => { compartmentId => $c }))->content;
+
+=head1 Inspect the raw exchange
+
+    my $res = $oci->get('/n', service => 'objectstorage');
+    print $res->status, ' ', $res->reason, "\n";
+    print "request-id: ", $res->headers->{'opc-request-id'} // '-', "\n";
+    print $res->raw, "\n";          # undecoded body
+
+To trace the signing string and headers of every call (the fastest way to
+debug a 401), pass a C<trace> callback:
+
+    my $oci = WebService::OCI->new(service => 'iaas', trace => sub {
+        my ($t) = @_;
+        warn "$t->{method} $t->{url}\n$t->{signing_string}\n";
+    });
+
+The C<oci-rest --debug> flag is exactly this callback.
+
+=head1 Other realms and unusual hosts
+
+The simple C<service> pattern is C<< <service>.<region>.oraclecloud.com >>. For
+a different realm or host shape, give a full C<base_url> (see
+L<WebService::OCI/ENDPOINTS>):
+
+    my $gov = WebService::OCI->new(
+        base_url => 'https://objectstorage.us-langley-1.oraclegovcloud.com',
+        # ...credentials...
+    );
+    my $ns = $gov->get('/n')->content;
+
+=head1 Bring your own HTTP client
+
+Inject any L<HTTP::Tiny>-compatible object - for a proxy, custom timeouts, CA
+bundle, or a mock in tests:
+
+    my $ua = HTTP::Tiny->new(proxy => 'http://proxy:3128/', timeout => 10);
+    my $oci = WebService::OCI->new(service => 'iaas', http => $ua);
+
+=head1 Sign without sending (advanced)
+
+L<WebService::OCI::Signer> stands alone, so you can sign a request and hand the
+headers to a different transport (an async client, C<curl>, etc.):
+
+    use WebService::OCI::Signer;
+    my $signer  = WebService::OCI::Signer->new(
+        tenancy => $t, user => $u, key_file => $key);   # fingerprint derived
+    my $headers = $signer->sign(
+        method => 'GET',
+        host   => 'iaas.us-ashburn-1.oraclecloud.com',
+        path   => '/20160918/instances',
+        query  => "compartmentId=$c",
+    );
+    # %$headers -> host, date, authorization
+
+=head1 The command line
+
+Everything above has an L<oci-rest> equivalent:
+
+    oci-rest get  /n --service objectstorage
+    oci-rest get  /20160918/instances --service iaas -p compartmentId=$C
+    oci-rest get  /20160918/instances --service iaas -p compartmentId=$C \
+                  --query 0.displayName
+    oci-rest post /20160918/vcns --service iaas --body-file vcn.json
+    oci-rest get  "/n/$NS/b/$BUCKET/o/photo.jpg" --service objectstorage \
+                  --output raw > photo.jpg
+    oci-rest fingerprint ~/.oci/oci_api_key.pem
+    oci-rest --debug get /n --service objectstorage     # show the signing string
+
+For another realm or an otherwise non-standard host, pass C<--endpoint> (alias
+C<--base-url>) with the full base URL, mirroring the C<base_url> argument above.
+
+=head1 SEE ALSO
+
+L<WebService::OCI>, L<WebService::OCI::Guide>, L<oci-rest>,
+L<WebService::OCI::Signer>
+
+=head1 AUTHOR
+
+vividsnow
+
+=head1 LICENSE
+
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut

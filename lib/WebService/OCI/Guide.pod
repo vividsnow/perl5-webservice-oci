@@ -1,0 +1,233 @@
+=head1 NAME
+
+WebService::OCI::Guide - getting started with WebService::OCI from scratch
+
+=head1 DESCRIPTION
+
+This is a start-to-finish walkthrough for someone who has never called the
+Oracle Cloud Infrastructure (OCI) API before. By the end you will have an API
+signing key, a F<~/.oci/config> file, and a working first request - from both
+the command line and Perl.
+
+If you already have a working F<~/.oci/config> (for example from the official
+C<oci> CLI), skip to L</"Step 7: Your first call">; this module reads the same
+file.
+
+=head1 Step 1: What you need
+
+=over 4
+
+=item *
+
+An Oracle Cloud account (the Always Free tier is enough), so you have a
+B<tenancy> and a B<user>.
+
+=item *
+
+C<openssl> on your machine, to generate a signing key.
+
+=item *
+
+This distribution installed (it pulls in L<HTTP::Tiny> and L<CryptX>):
+
+    cpanm WebService::OCI
+    # or, from a checkout:
+    perl Makefile.PL && make && make test && make install
+
+=back
+
+OCI API access uses B<API-key signing>: you create an RSA key pair, upload the
+public half to your user in the Console, and sign every request with the
+private half. There are no passwords or bearer tokens to manage.
+
+=head1 Step 2: Generate an API signing key
+
+The key must be an RSA private key in PEM format, 2048 bits or larger.
+
+    mkdir -p ~/.oci && chmod 700 ~/.oci
+    openssl genrsa -out ~/.oci/oci_api_key.pem 2048
+    chmod 600 ~/.oci/oci_api_key.pem
+    openssl rsa -pubout -in ~/.oci/oci_api_key.pem \
+        -out ~/.oci/oci_api_key_public.pem
+
+To protect the key with a passphrase, add C<-aes256> to the C<genrsa> line; you
+will then set C<pass_phrase> in the config (Step 5).
+
+=head1 Step 3: Get the key fingerprint
+
+The B<fingerprint> identifies which uploaded key signed a request. You can
+compute it before or after uploading:
+
+    oci-rest fingerprint ~/.oci/oci_api_key.pem
+    # or, with plain openssl:
+    openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null \
+        | openssl md5 -c
+
+Both print the same C<aa:bb:cc:...> string. The OCI Console also shows it when
+you upload the key in the next step.
+
+=head1 Step 4: Upload the public key
+
+In the OCI Console: click your B<profile> icon (top right) and open B<My
+profile> (older consoles: B<User Settings>). Under B<API keys>, choose B<Add
+API key>, then either upload F<~/.oci/oci_api_key_public.pem> or paste its
+contents.
+
+After adding it, the Console displays a B<Configuration file preview> with your
+C<user>, C<fingerprint>, C<tenancy> and C<region> already filled in. Keep that
+preview open for the next two steps - it has everything you need.
+
+=head1 Step 5: Collect your OCIDs and region
+
+You need three identifiers (the Console preview from Step 4 has all of them):
+
+=over 4
+
+=item *
+
+B<tenancy OCID> - looks like C<ocid1.tenancy.oc1..aaaa...>.
+
+=item *
+
+B<user OCID> - C<ocid1.user.oc1..aaaa...>.
+
+=item *
+
+B<region> - the region identifier such as C<us-ashburn-1> or C<eu-frankfurt-1>.
+
+=back
+
+=head1 Step 6: Write ~/.oci/config
+
+Create F<~/.oci/config> with a C<[DEFAULT]> profile:
+
+    [DEFAULT]
+    user=ocid1.user.oc1..aaaa
+    fingerprint=aa:bb:cc:dd:ee:ff:...
+    tenancy=ocid1.tenancy.oc1..aaaa
+    region=us-ashburn-1
+    key_file=~/.oci/oci_api_key.pem
+
+    chmod 600 ~/.oci/config
+
+Or let the CLI prompt you and append the profile (it derives the fingerprint
+from the key, and never overwrites an existing profile):
+
+    oci-rest configure
+
+You can keep several profiles - C<[DEFAULT]>, C<[STAGING]>, C<[work]> - and
+select one with C<--profile NAME> on the CLI or C<< profile =E<gt> 'NAME' >> in
+Perl.
+
+=head1 Step 7: Your first call
+
+A good first request is Object Storage B<GetNamespace>: it is authenticated but
+needs no compartment or other setup, and just returns your tenancy's namespace
+string.
+
+From the command line:
+
+    oci-rest get /n --service objectstorage
+
+In Perl:
+
+    use WebService::OCI;
+    my $oci = WebService::OCI->new(service => 'objectstorage');
+    my $res = $oci->get('/n');
+    die $res->reason unless $res->is_success;
+    print "namespace: ", $res->content, "\n";
+
+If you get a namespace back, your key, fingerprint, config and region are all
+correct.
+
+=head1 Step 8: A real query
+
+List the Compute instances in a compartment. The root compartment's OCID is
+your B<tenancy> OCID, so you can start there:
+
+    my $oci = WebService::OCI->new(service => 'iaas');   # Compute/Network/Volume
+    my $res = $oci->get('/20160918/instances',
+        query => { compartmentId => $tenancy_ocid });
+    for my $inst (@{ $res->content }) {
+        printf "%-20s %s\n", $inst->{lifecycleState}, $inst->{displayName};
+    }
+
+The same on the command line:
+
+    oci-rest get /20160918/instances --service iaas \
+        -p compartmentId=ocid1.tenancy.oc1..aaaa
+
+See L<WebService::OCI::Cookbook> for pagination, Object Storage uploads,
+creating resources, and more.
+
+=head1 Step 9: Reading the API reference
+
+This module is a generic client: you supply the path and parameters straight
+from Oracle's REST API reference at L<https://docs.oracle.com/en-us/iaas/api/>.
+Each operation there lists its HTTP method, its path (such as
+C</20160918/instances>, where C<20160918> is the API version), the host/service
+it lives on, and its query and body parameters. Map those directly:
+
+=over 4
+
+=item *
+
+method + path -> C<< $oci->get($path) >> / C<< $oci->post($path, $body) >> etc.
+
+=item *
+
+the service host's leading label -> C<< service =E<gt> 'iaas' >> (or pass a full
+C<base_url>; see L<WebService::OCI/ENDPOINTS>).
+
+=item *
+
+query parameters -> C<< query =E<gt> { ... } >>.
+
+=item *
+
+request body -> the C<$payload> argument to C<post>/C<put>, or C<json>/C<body>.
+
+=back
+
+=head1 Troubleshooting
+
+=over 4
+
+=item B<401 NotAuthenticated>
+
+The signature was rejected. Common causes: wrong C<fingerprint> or C<key_file>;
+the public key was never uploaded (or to the wrong user); a client clock more
+than five minutes off; or the wrong C<region>. Run the request with C<--debug>
+to see the exact signing string and headers:
+
+    oci-rest --debug get /n --service objectstorage
+
+=item B<404 NotFound>
+
+Often a wrong host rather than a wrong path - check the service's base URL in
+the API reference and use C<base_url> if it does not fit the simple pattern
+(see L<WebService::OCI/ENDPOINTS>).
+
+=item B<400 / 409>
+
+A malformed or conflicting request body or state. Inspect C<< $res->content >>;
+OCI returns a JSON C<code>/C<message>. Quote the C<opc-request-id> response
+header in any support request.
+
+=back
+
+=head1 SEE ALSO
+
+L<WebService::OCI>, L<WebService::OCI::Cookbook>, L<oci-rest>,
+L<WebService::OCI::Signer>
+
+=head1 AUTHOR
+
+vividsnow
+
+=head1 LICENSE
+
+This library is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut

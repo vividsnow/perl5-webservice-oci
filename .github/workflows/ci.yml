@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: perl ${{ matrix.perl }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+        perl: [ '5.16', '5.26', '5.36', 'latest' ]
+        include:
+          - os: macos-latest
+            perl: 'latest'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: ${{ matrix.perl }}
+      - name: Install dependencies
+        run: cpanm --notest --installdeps .
+      - name: Build and test
+        run: |
+          perl Makefile.PL
+          make
+          make test
+
+  author:
+    name: author tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: 'latest'
+      - name: Install dependencies
+        run: |
+          cpanm --notest --installdeps .
+          cpanm --notest Test::Pod Test::Pod::Coverage Test::Kwalitee
+      - name: Author tests
+        env:
+          AUTHOR_TESTING: 1
+        run: |
+          perl Makefile.PL
+          make
+          prove -lr xt/

@@ -1,0 +1,51 @@
+WebService::OCI
+===============
+
+Minimal, fast client for the Oracle Cloud Infrastructure (OCI) REST API.
+
+The hard part of OCI is correct request signing, not breadth of methods. This
+distribution pairs a byte-exact API-key signer with a thin HTTP::Tiny transport
+and a generic request() method that reaches any OCI endpoint - you pass the path
+and parameters straight from Oracle's API reference and get back decoded JSON.
+It is deliberately not an auto-generated, per-service SDK.
+
+Includes a command-line tool, oci-rest.
+
+QUICK START
+
+    use WebService::OCI;
+    my $oci = WebService::OCI->new(service => 'objectstorage');  # ~/.oci/config
+    my $res = $oci->get('/n');                                   # your namespace
+    print $res->content, "\n" if $res->is_success;
+
+    # command line
+    oci-rest get /n --service objectstorage
+
+If you have never used OCI before, read the guide:
+
+    perldoc WebService::OCI::Guide      # key, OCIDs, config, first call
+    perldoc WebService::OCI::Cookbook   # task-oriented recipes
+    perldoc WebService::OCI             # API reference
+    oci-rest --help
+
+INSTALLATION
+
+    perl Makefile.PL
+    make
+    make test
+    make install
+
+DEPENDENCIES
+
+    HTTP::Tiny, CryptX (Crypt::PK::RSA), and core modules (JSON::PP,
+    Digest::SHA, Digest::MD5, MIME::Base64, Getopt::Long). IO::Socket::SSL and
+    Net::SSLeay are needed for HTTPS, and Cpanel::JSON::XS is used if present.
+
+AUTHENTICATION
+
+    API-key (request-signing) auth only - the ~/.oci/config scheme used by the
+    OCI CLI and SDKs. Instance/resource principals are out of scope.
+
+LICENSE
+
+    Same terms as Perl itself.
