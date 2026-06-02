@@ -3,6 +3,8 @@ use strict;
 use warnings;
 use WebService::OCI;
 
+$| = 1;   # unbuffered, so progress shows up live in a redirected/background log
+
 # Launch a Compute instance end to end: pick an availability domain and image,
 # launch, wait for RUNNING, then print the public IP and an ssh command.
 #
@@ -16,8 +18,9 @@ use WebService::OCI;
 #       [--shape VM.Standard.E2.1.Micro] [--name demo] \
 #       [--os "Oracle Linux"] [--profile DEFAULT] [--retry 300]
 #
-# --retry SECONDS keeps re-sweeping the ADs when all are out of host capacity
-# (common for free A1.Flex); Ctrl-C to stop.
+# --retry SECONDS keeps re-sweeping the ADs on transient failures: out of host
+# capacity (common for free A1.Flex) and 429/5xx rate-limit/server errors.
+# Ctrl-C to stop.
 
 use Getopt::Long qw(:config no_auto_abbrev);
 my %o = (
@@ -98,8 +101,10 @@ while (!$inst) {
         if ($res->is_success) { $inst = $res->content; print "launching in $ad\n"; last }
         my $b   = $res->content;
         my $msg = ref $b eq 'HASH' ? ($b->{message} // '') : ($b // '');
-        if ($res->status == 500 && $msg =~ /capacity/i) {
-            print "  $ad: out of host capacity\n";
+        # transient: out-of-host-capacity (500) and rate-limit/server errors
+        # (429 and other 5xx). Keep sweeping; a real client error (4xx) is fatal.
+        if ($res->status == 429 || $res->status >= 500) {
+            printf "  %s: %s %s\n", $ad, $res->status, $msg || $res->reason || '';
             next;
         }
         die sprintf "launch failed in %s: %s %s - %s (opc-request-id=%s)\n",
@@ -107,10 +112,10 @@ while (!$inst) {
             $res->headers->{'opc-request-id'} // '-';
     }
     last if $inst || !$o{retry};
-    print "attempt $attempt: no capacity in any AD; retrying in $o{retry}s (Ctrl-C to stop)...\n";
+    print "attempt $attempt: no instance yet; retrying in $o{retry}s (Ctrl-C to stop)...\n";
     sleep $o{retry};
 }
-$inst or die "out of host capacity in all ADs (@ad_names).\n"
+$inst or die "could not launch in any AD (@ad_names): no capacity or rate-limited.\n"
     . "Free A1.Flex capacity is scarce. Re-run with '--retry 300' to keep trying,\n"
     . "or use a paid shape.\n";
 my $id = $inst->{id};
