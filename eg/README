@@ -2,48 +2,58 @@ Examples for WebService::OCI
 ============================
 
 These scripts use the DEFAULT profile from ~/.oci/config unless noted.
-See WebService::OCI::Guide for how to set that up, and
-WebService::OCI::Cookbook for more recipes.
+See WebService::OCI::Guide to set that up, and WebService::OCI::Cookbook for
+more recipes. Run each with no/invalid arguments to see its usage.
 
-  first-call.pl
-      Hello world: print your Object Storage namespace.
-        perl eg/first-call.pl
+Getting started
+  first-call.pl                 print your Object Storage namespace (hello world)
+  whoami.pl                     show the authenticated user and tenancy (Identity)
+  raw-request.pl METHOD SERVICE PATH [k=v ...]
+                                a minimal generic caller
 
-  whoami.pl [--config FILE] [--profile DEFAULT]
-      Show the authenticated user and tenancy (Identity API) - a fuller
-      config check than the namespace ping.
-
+Discovery
   discover.pl --compartment OCID [--shape NAME] [--os "Oracle Linux"]
-      List availability domains, the shapes offered in each, and recent
-      images - handy when a shape/image is rejected or out of capacity.
+                                availability domains, shapes per AD, recent images
+  list-compartments.pl [--compartment OCID]
+                                walk the compartment subtree (find OCIDs)
 
+Compute
   list-instances.pl <compartment-ocid> [profile]
-      List Compute instances in a compartment, following pagination.
-      The root compartment OCID is your tenancy OCID.
-
-  objectstorage.pl <compartment-ocid> <bucket> [file]
-      Namespace + list buckets; optionally upload a file and read it back
-      (shows the PutObject signing exception).
-
-  object-sync.pl --bucket NAME --dir PATH [--prefix STR]
-      Upload a directory to a bucket: list existing objects (paginated),
-      then upload any local file not already there.
-
-  raw-request.pl METHOD SERVICE PATH [key=value ...]
-      A minimal generic caller, e.g.
-        perl eg/raw-request.pl GET iaas /20160918/instances compartmentId=ocid1..c
-
-  setup-network.pl --compartment OCID [--name demo] [...]
-      Create a minimal public network over the API: VCN, internet gateway,
-      a default route to it, and a public regional subnet. Prints the subnet
-      OCID to feed to launch-instance.pl. (Networking resources are free.)
-
+                                list instances, following pagination
   launch-instance.pl --compartment OCID --subnet OCID --ssh-key FILE [...]
-      Launch a Compute instance end to end: resolve availability domain and
-      image, launch, wait for RUNNING, print the public IP and ssh command.
-
+                                launch an instance end to end (--retry rides out
+                                capacity/429/5xx)
+  instance-action.pl --instance OCID --action START|STOP|RESET|... [--wait]
+                                start/stop/reset an instance
+  parallel.pl --compartment OCID [--concurrency 8]
+                                fan out per-instance lookups concurrently (fork;
+                                one client per worker)
   teardown.pl --compartment OCID [--instance OCID] [--vcn OCID]
-      Clean up: terminate an instance and/or delete a VCN (subnets and
-      internet gateways first, then the VCN).
+                                terminate an instance and/or delete a VCN
+
+Networking
+  setup-network.pl --compartment OCID [--name demo]
+                                create a VCN + internet gateway + public subnet
+  security-rule.pl --security-list OCID --port N [--source CIDR]
+                                open a port (read-modify-write with if-match)
+
+Object Storage
+  objectstorage.pl <compartment-ocid> <bucket> [file]
+                                namespace + list buckets; optional up/download
+  object-sync.pl --bucket NAME --dir PATH [--prefix STR]
+                                upload a directory (skip objects already present)
+  object-pull.pl --bucket NAME --dir PATH [--prefix STR]
+                                download a bucket into a directory
+  presigned-url.pl --bucket NAME --object KEY [--days 7]
+                                create a pre-authenticated request (shareable URL)
+  multipart-upload.pl --bucket NAME --file PATH [--part-mb 128]
+                                upload a large file in parts
+
+Other services
+  secret.pl --secret OCID [--out FILE]
+                                fetch a Vault secret bundle (uses base_url for the
+                                secrets.vaults.<region>.oci.oraclecloud.com host)
+  metrics.pl --compartment OCID [--query 'CpuUtilization[1m].mean()']
+                                query the Monitoring service (MQL)
 
 For the command-line tool, see: oci-rest --help
