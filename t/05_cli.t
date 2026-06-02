@@ -125,6 +125,16 @@ SKIP: {
     is $raw, 'plain-bytes', '--output raw writes the response body verbatim';
 }
 
+# a POST --body is actually transmitted: capture what the server receives
+SKIP: {
+    eval { require IO::Socket::INET; 1 } or skip 'IO::Socket::INET unavailable', 4;
+    my $req = http_capture('post', '/foo', '--body', '{"k":1}') // '';
+    like $req, qr{^POST /foo HTTP/1\.1\r\n},   'POST request line sent';
+    like $req, qr{\r\nx-content-sha256: }i,    'x-content-sha256 header sent';
+    like $req, qr{\r\ncontent-length: 7\r\n}i, 'content-length matches the body';
+    like $req, qr{\r\n\r\n\Q{"k":1}\E\z},      'body transmitted after the headers';
+}
+
 done_testing;
 
 # one-shot HTTP/1.1 server on an ephemeral port; runs oci-rest against it
@@ -150,4 +160,50 @@ sub http_roundtrip {
     my $out = qx{@run --config $cfg --endpoint http://127.0.0.1:$port --timeout 5 @args 2>/dev/null};
     waitpid $pid, 0;
     return $out;
+}
+
+# like http_roundtrip, but returns the raw request the server received (so we
+# can assert what was sent). Runs the CLI via exec (no shell) to keep a JSON
+# --body intact.
+sub http_capture {
+    my (@args) = @_;
+    my ($rh, $reqfile) = tempfile(UNLINK => 1);
+    close $rh;
+    my $srv = IO::Socket::INET->new(
+        LocalAddr => '127.0.0.1', LocalPort => 0, Listen => 1, ReuseAddr => 1) or return;
+    my $port = $srv->sockport;
+    my $spid = fork;
+    return unless defined $spid;
+    if (!$spid) {
+        alarm 15;
+        if (my $c = $srv->accept) {
+            my ($cap, $clen) = ('', 0);
+            local $/ = "\r\n";
+            while (my $l = <$c>) {
+                $cap .= $l;
+                $clen = $1 if $l =~ /^content-length:\s*(\d+)/i;
+                last if $l eq "\r\n";
+            }
+            if ($clen) { my $body = ''; read $c, $body, $clen; $cap .= $body }
+            if (open my $w, '>:raw', $reqfile) { print {$w} $cap; close $w }
+            print {$c} "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                . "Content-Length: 2\r\nConnection: close\r\n\r\n{}";
+            close $c;
+        }
+        exit 0;
+    }
+    close $srv;
+    my $cpid = fork;
+    if (defined $cpid && !$cpid) {
+        open STDOUT, '>', '/dev/null';
+        open STDERR, '>', '/dev/null';
+        exec @run, '--config', $cfg, '--endpoint', "http://127.0.0.1:$port",
+            '--timeout', '5', @args;
+        exit 127;
+    }
+    waitpid $cpid, 0 if defined $cpid;
+    waitpid $spid, 0;
+    open my $f, '<:raw', $reqfile or return;
+    local $/;
+    return scalar <$f>;
 }

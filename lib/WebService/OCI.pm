@@ -241,6 +241,9 @@ __END__
 
 WebService::OCI - minimal, fast Oracle Cloud Infrastructure (OCI) REST client
 
+=for test_synopsis
+my ($compartment_id, $cid);
+
 =head1 SYNOPSIS
 
     use WebService::OCI;

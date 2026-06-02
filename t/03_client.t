@@ -195,4 +195,16 @@ like $@, qr/region required/, 'bare service without region croaks';
 eval { WebService::OCI->new(config_file => '/no/such/oci/file', key_file => $keyfile) };
 like $@, qr/not readable/, 'unreadable explicit config_file croaks';
 
+# ---- constructor options reach the underlying HTTP::Tiny ------------------
+my $real = WebService::OCI->new(
+    key_id => 't/u/f', key_file => $keyfile,
+    agent => 'demo-agent/9', timeout => 17, verify_SSL => 0);
+isa_ok $real->http, 'HTTP::Tiny', 'default transport';
+is $real->http->agent,   'demo-agent/9', 'agent reaches HTTP::Tiny';
+is $real->http->timeout, 17,             'timeout reaches HTTP::Tiny';
+ok !$real->http->verify_SSL, 'verify_SSL => 0 reaches HTTP::Tiny';
+my $dflt = WebService::OCI->new(key_id => 't/u/f', key_file => $keyfile);
+ok $dflt->http->verify_SSL, 'verify_SSL defaults on';
+ok $dflt->http->keep_alive, 'keep_alive on';
+
 done_testing;

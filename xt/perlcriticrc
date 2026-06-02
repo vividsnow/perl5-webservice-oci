@@ -1,0 +1,8 @@
+severity = 5
+
+# _json() loads optional JSON backends by name; require() with a variable needs
+# string-eval semantics, so the stringy eval is intentional.
+[-BuiltinFunctions::ProhibitStringyEval]
+
+# extract() returns undef for a missing path and is only used in scalar context.
+[-Subroutines::ProhibitExplicitReturnUndef]

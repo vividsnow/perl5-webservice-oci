@@ -43,7 +43,8 @@ jobs:
         run: |
           cpanm --notest --installdeps .
           cpanm --notest Test::Pod Test::Pod::Coverage Test::Kwalitee \
-                         Test::MinimumVersion Test::CPAN::Changes
+                         Test::MinimumVersion Test::CPAN::Changes \
+                         Test::Perl::Critic Test::Vars Test::Synopsis
       - name: Author tests
         env:
           AUTHOR_TESTING: 1

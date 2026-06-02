@@ -9,6 +9,14 @@ WebService::OCI::Cookbook for more recipes.
       Hello world: print your Object Storage namespace.
         perl eg/first-call.pl
 
+  whoami.pl [--config FILE] [--profile DEFAULT]
+      Show the authenticated user and tenancy (Identity API) - a fuller
+      config check than the namespace ping.
+
+  discover.pl --compartment OCID [--shape NAME] [--os "Oracle Linux"]
+      List availability domains, the shapes offered in each, and recent
+      images - handy when a shape/image is rejected or out of capacity.
+
   list-instances.pl <compartment-ocid> [profile]
       List Compute instances in a compartment, following pagination.
       The root compartment OCID is your tenancy OCID.
@@ -16,6 +24,10 @@ WebService::OCI::Cookbook for more recipes.
   objectstorage.pl <compartment-ocid> <bucket> [file]
       Namespace + list buckets; optionally upload a file and read it back
       (shows the PutObject signing exception).
+
+  object-sync.pl --bucket NAME --dir PATH [--prefix STR]
+      Upload a directory to a bucket: list existing objects (paginated),
+      then upload any local file not already there.
 
   raw-request.pl METHOD SERVICE PATH [key=value ...]
       A minimal generic caller, e.g.
