@@ -8,6 +8,7 @@ eg/objectstorage.pl
 eg/raw-request.pl
 eg/README
 eg/setup-network.pl
+eg/teardown.pl
 lib/WebService/OCI.pm
 lib/WebService/OCI/Config.pm
 lib/WebService/OCI/Cookbook.pod
@@ -25,8 +26,10 @@ t/04_live.t
 t/05_cli.t
 t/06_query.t
 t/testkey.pem
+xt/cpan-changes.t
 xt/kwalitee.t
 xt/manifest.t
+xt/minimum-version.t
 xt/pod-coverage.t
 xt/pod.t
 xt/spelling.t

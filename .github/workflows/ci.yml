@@ -42,7 +42,8 @@ jobs:
       - name: Install dependencies
         run: |
           cpanm --notest --installdeps .
-          cpanm --notest Test::Pod Test::Pod::Coverage Test::Kwalitee
+          cpanm --notest Test::Pod Test::Pod::Coverage Test::Kwalitee \
+                         Test::MinimumVersion Test::CPAN::Changes
       - name: Author tests
         env:
           AUTHOR_TESTING: 1

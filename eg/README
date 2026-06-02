@@ -30,4 +30,8 @@ WebService::OCI::Cookbook for more recipes.
       Launch a Compute instance end to end: resolve availability domain and
       image, launch, wait for RUNNING, print the public IP and ssh command.
 
+  teardown.pl --compartment OCID [--instance OCID] [--vcn OCID]
+      Clean up: terminate an instance and/or delete a VCN (subnets and
+      internet gateways first, then the VCN).
+
 For the command-line tool, see: oci-rest --help

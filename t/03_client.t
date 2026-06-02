@@ -131,6 +131,15 @@ my $empty = $oci->get('/x');
 is $empty->content, '', 'content() returns an empty body as-is';
 ok !eval { $empty->json; 1 }, 'json() dies on an empty body';
 
+# a multi-valued Content-Type (arrayref, as some user-agents return) decodes
+$ua->{resp} = {
+    success => 1, status => 200, reason => 'OK',
+    headers => { 'content-type' => ['application/json'] },
+    content => '{"a":1}',
+};
+is_deeply $oci->get('/x')->content, { a => 1 },
+   'arrayref content-type header still decodes JSON';
+
 # ---- verb helpers wire method and body correctly --------------------------
 $ua->{resp} = { success => 1, status => 200, reason => 'OK', headers => {}, content => '' };
 $oci->delete('/d');

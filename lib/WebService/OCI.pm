@@ -504,6 +504,17 @@ Default config file path when C<config_file> is not given.
 
 =back
 
+=head1 CAVEATS
+
+Calls are synchronous and a client handles one request at a time; the
+keep-alive connection and the signer are stateful, so give each concurrent
+worker its own client rather than sharing one. There is no built-in retry,
+backoff, or pagination - you loop yourself (OCI rate-limits with HTTP 429 and
+paginates lists with the C<opc-next-page> header; see
+L<WebService::OCI::Cookbook>). As a thin generic client it does not validate
+paths or parameters against a service model - you pass them straight from
+Oracle's API reference.
+
 =head1 SEE ALSO
 
 L<WebService::OCI::Guide>, L<WebService::OCI::Cookbook>,
